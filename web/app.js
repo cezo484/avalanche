@@ -36,6 +36,7 @@ const finalScore = document.getElementById('final-score');
 const finalDist = document.getElementById('final-dist');
 const finalAbsorbed = document.getElementById('final-absorbed');
 const newBest = document.getElementById('new-best');
+const muteBtn = document.getElementById('mute-btn');
 
 const state = createGame();
 const keys = new Set();
@@ -72,6 +73,194 @@ function saveBest(value) {
 
 let best = loadBest();
 
+// Sound: all effects are synthesized with the Web Audio API, no audio
+// files. The AudioContext is created only on a user gesture (mobile
+// autoplay policy), so in ?autoplay mode with no interaction every
+// sound call is a silent no-op and nothing throws.
+
+const SOUND_MUTED_KEY = 'avalanche-muted';
+const sound = { ctx: null, master: null, wind: null, muted: false };
+
+function loadMuted() {
+  try {
+    return localStorage.getItem(SOUND_MUTED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveMuted(value) {
+  try {
+    localStorage.setItem(SOUND_MUTED_KEY, value ? '1' : '0');
+  } catch {
+    // Storage is optional.
+  }
+}
+
+sound.muted = loadMuted();
+
+function ensureAudio() {
+  if (sound.ctx) {
+    if (sound.ctx.state === 'suspended') sound.ctx.resume().catch(() => {});
+    return;
+  }
+  try {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) return;
+    sound.ctx = new Ctor();
+    sound.master = sound.ctx.createGain();
+    sound.master.gain.value = sound.muted ? 0 : 0.5;
+    sound.master.connect(sound.ctx.destination);
+  } catch {
+    sound.ctx = null;
+    sound.master = null;
+  }
+}
+
+function suspendAudio() {
+  if (sound.ctx && sound.ctx.state === 'running') {
+    sound.ctx.suspend().catch(() => {});
+  }
+}
+
+function noiseBuffer(ctx, seconds) {
+  const buffer = ctx.createBuffer(1, ctx.sampleRate * seconds, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  return buffer;
+}
+
+function tone({ freq, endFreq, type = 'sine', dur = 0.1, vol = 0.3, when = 0 }) {
+  if (!sound.ctx || sound.muted) return;
+  const t0 = sound.ctx.currentTime + when;
+  const osc = sound.ctx.createOscillator();
+  const gain = sound.ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  if (endFreq) osc.frequency.exponentialRampToValueAtTime(Math.max(1, endFreq), t0 + dur);
+  gain.gain.setValueAtTime(vol, t0);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  osc.connect(gain);
+  gain.connect(sound.master);
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.02);
+}
+
+function noiseBurst({ dur = 0.2, vol = 0.3, filterFreq = 800, type = 'lowpass', when = 0 }) {
+  if (!sound.ctx || sound.muted) return;
+  const t0 = sound.ctx.currentTime + when;
+  const src = sound.ctx.createBufferSource();
+  src.buffer = noiseBuffer(sound.ctx, Math.max(dur, 0.1));
+  const filter = sound.ctx.createBiquadFilter();
+  filter.type = type;
+  filter.frequency.value = filterFreq;
+  const gain = sound.ctx.createGain();
+  gain.gain.setValueAtTime(vol, t0);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(sound.master);
+  src.start(t0);
+  src.stop(t0 + dur + 0.02);
+}
+
+function playGulp(kind, combo) {
+  const base = kind === 'pine' ? 320 : kind === 'rock' ? 520 : 420;
+  const freq = base + (combo - 1) * 70;
+  tone({ freq, endFreq: freq * 1.6, dur: 0.09, vol: 0.25 });
+}
+
+function playThud() {
+  tone({ freq: 110, endFreq: 38, dur: 0.28, vol: 0.5 });
+  noiseBurst({ dur: 0.18, vol: 0.25, filterFreq: 300 });
+}
+
+function playCrack() {
+  noiseBurst({ dur: 0.15, vol: 0.35, filterFreq: 2400, type: 'highpass' });
+  tone({ freq: 1400, endFreq: 900, type: 'triangle', dur: 0.08, vol: 0.15 });
+  tone({ freq: 1900, endFreq: 1200, type: 'triangle', dur: 0.07, vol: 0.1, when: 0.05 });
+}
+
+function playCombo(level) {
+  const notes = [523.25, 659.25, 783.99, 1046.5];
+  const count = Math.min(level, notes.length);
+  for (let i = 0; i < count; i++) {
+    tone({ freq: notes[i], type: 'triangle', dur: 0.12, vol: 0.2, when: i * 0.06 });
+  }
+}
+
+function playGameOver() {
+  const notes = [659.25, 587.33, 523.25, 392.0];
+  notes.forEach((freq, i) => {
+    tone({ freq, type: 'triangle', dur: 0.22, vol: 0.22, when: i * 0.18 });
+  });
+}
+
+function playWhoosh() {
+  if (!sound.ctx || sound.muted) return;
+  const t0 = sound.ctx.currentTime;
+  const src = sound.ctx.createBufferSource();
+  src.buffer = noiseBuffer(sound.ctx, 0.6);
+  const filter = sound.ctx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.setValueAtTime(300, t0);
+  filter.frequency.exponentialRampToValueAtTime(1400, t0 + 0.45);
+  filter.Q.value = 1.2;
+  const gain = sound.ctx.createGain();
+  gain.gain.setValueAtTime(0.001, t0);
+  gain.gain.exponentialRampToValueAtTime(0.25, t0 + 0.15);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.5);
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(sound.master);
+  src.start(t0);
+  src.stop(t0 + 0.55);
+}
+
+function startWind() {
+  if (!sound.ctx || sound.wind) return;
+  const src = sound.ctx.createBufferSource();
+  src.buffer = noiseBuffer(sound.ctx, 2);
+  src.loop = true;
+  const filter = sound.ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 320;
+  const gain = sound.ctx.createGain();
+  gain.gain.value = 0.035;
+  const lfo = sound.ctx.createOscillator();
+  lfo.frequency.value = 0.08;
+  const lfoGain = sound.ctx.createGain();
+  lfoGain.gain.value = 120;
+  lfo.connect(lfoGain);
+  lfoGain.connect(filter.frequency);
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(sound.master);
+  src.start();
+  lfo.start();
+  sound.wind = { src, lfo };
+}
+
+function stopWind() {
+  if (!sound.wind) return;
+  try {
+    sound.wind.src.stop();
+    sound.wind.lfo.stop();
+  } catch {
+    // Already stopped.
+  }
+  sound.wind = null;
+}
+
+function setMuted(muted) {
+  sound.muted = muted;
+  saveMuted(muted);
+  if (sound.master) sound.master.gain.value = muted ? 0 : 0.5;
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  muteBtn.classList.toggle('off', muted);
+  muteBtn.setAttribute('aria-label', muted ? 'Unmute sound' : 'Mute sound');
+}
+
 function showOverlay(which) {
   menu.hidden = which !== 'menu';
   pauseOverlay.hidden = which !== 'pause';
@@ -105,6 +294,8 @@ function startRun() {
   startGame(state);
   lastMass = state.mass;
   lastAbsorbed = 0;
+  playWhoosh();
+  startWind();
   showOverlay('playing');
   refreshHud();
 }
@@ -121,6 +312,8 @@ function endRun() {
   } else {
     newBest.hidden = true;
   }
+  stopWind();
+  playGameOver();
   showOverlay('over');
 }
 
@@ -447,11 +640,28 @@ function frame(now) {
           right: keys.has('ArrowRight') || keys.has('d') || keys.has('D'),
           moveX: pointerX,
         };
+    const beforeKinds = { ...state.absorbedByKind };
+    const beforeCombo = state.combo;
+    const nearHazards = state.entities.filter(
+      (e) => (e.kind === 'boulder' || e.kind === 'wall') &&
+        Math.abs(e.y - state.player.y) < 90 &&
+        Math.abs(e.x - state.player.x) < 130,
+    );
     step(state, dt, input);
+    for (const kind of ['snow', 'pine', 'rock']) {
+      if (state.absorbedByKind[kind] > beforeKinds[kind]) {
+        playGulp(kind, state.combo);
+        break;
+      }
+    }
+    if (state.combo > beforeCombo) playCombo(state.combo);
     if (Math.random() < 0.6) spray(state.player.x, state.player.y - radiusOf(state.mass));
     if (state.mass < lastMass - 0.05) {
       shakeUntil = performance.now() + 250;
       burst(state.player.x, state.player.y, '#ffb020', 14);
+      const hit = nearHazards.find((e) => !state.entities.includes(e));
+      if (hit && hit.kind === 'wall') playCrack();
+      else playThud();
     }
     if (state.absorbed > lastAbsorbed) {
       burst(state.player.x, state.player.y - 10, '#7cc4f5', 8);
@@ -475,6 +685,7 @@ function canvasX(clientX) {
 }
 
 canvas.addEventListener('pointerdown', (event) => {
+  ensureAudio();
   pointerX = canvasX(event.clientX);
   canvas.setPointerCapture(event.pointerId);
 });
@@ -489,9 +700,11 @@ canvas.addEventListener('pointercancel', () => {
 });
 
 document.addEventListener('keydown', (event) => {
+  ensureAudio();
   if (event.key === 'p' || event.key === 'P') {
     if (state.status === 'playing') {
       pauseGame(state);
+      suspendAudio();
       showOverlay('pause');
     } else if (state.status === 'paused') {
       resumeGame(state);
@@ -510,23 +723,37 @@ document.addEventListener('keydown', (event) => {
 });
 document.addEventListener('keyup', (event) => keys.delete(event.key));
 
-document.getElementById('play-btn').addEventListener('click', startRun);
-document.getElementById('again-btn').addEventListener('click', startRun);
+document.getElementById('play-btn').addEventListener('click', () => {
+  ensureAudio();
+  startRun();
+});
+document.getElementById('again-btn').addEventListener('click', () => {
+  ensureAudio();
+  startRun();
+});
 document.getElementById('resume-btn').addEventListener('click', () => {
+  ensureAudio();
   resumeGame(state);
   showOverlay('playing');
 });
 document.getElementById('quit-btn').addEventListener('click', () => {
+  stopWind();
   resetGame(state);
   refreshMenu();
   showOverlay('menu');
 });
 document.getElementById('menu-btn').addEventListener('click', () => {
+  stopWind();
   resetGame(state);
   refreshMenu();
   showOverlay('menu');
 });
+muteBtn.addEventListener('click', () => {
+  ensureAudio();
+  setMuted(!sound.muted);
+});
 
+setMuted(sound.muted);
 refreshMenu();
 showOverlay('menu');
 requestAnimationFrame(frame);
