@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Avalanche - A Lofi the Yeti Game</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="stage">
+  <div class="frame">
+    <canvas id="game" width="480" height="720"></canvas>
+
+    <div class="hud" id="hud" hidden>
+      <div class="hud-left">
+        <div class="hud-score" id="hud-score">0</div>
+        <div class="hud-dist" id="hud-dist">0 m</div>
+      </div>
+      <div class="hud-right">
+        <div class="hud-combo" id="hud-combo" hidden>x2</div>
+        <div class="hud-mass-label">SIZE</div>
+        <div class="hud-mass"><div class="hud-mass-fill" id="hud-mass-fill"></div></div>
+      </div>
+    </div>
+
+    <div class="overlay" id="menu">
+      <div class="logo">⛄</div>
+      <h1>Avalanche</h1>
+      <p class="tagline">You are the avalanche.</p>
+      <p class="howto">
+        Steer with arrow keys or drag.<br>
+        Swallow snow, pines and rocks to grow.<br>
+        Bigger means faster, but harder to steer.<br>
+        Boulders and ice walls shrink you. Shrink to<br>
+        nothing and the run ends.
+      </p>
+      <button class="btn" id="play-btn">Roll</button>
+      <p class="best" id="menu-best" hidden>Best score: <span id="menu-best-value">0</span></p>
+    </div>
+
+    <div class="overlay" id="pause" hidden>
+      <h2>Paused</h2>
+      <p class="howto">Take a breath. The mountain waits.</p>
+      <button class="btn" id="resume-btn">Resume</button>
+      <button class="btn secondary" id="quit-btn">Quit to menu</button>
+    </div>
+
+    <div class="overlay" id="gameover" hidden>
+      <h2>Melted away!</h2>
+      <p class="final-score"><span id="final-score">0</span> points</p>
+      <p class="final-dist"><span id="final-dist">0</span> meters down the slope</p>
+      <p class="final-absorbed"><span id="final-absorbed">0</span> things swallowed</p>
+      <p class="new-best" id="new-best" hidden>New best score!</p>
+      <button class="btn" id="again-btn">Roll again</button>
+      <button class="btn secondary" id="menu-btn">Menu</button>
+    </div>
+  </div>
+  <p class="foot">Built for CLAY Hackathon III on Sui. Arrow keys or drag to steer, P to pause.</p>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>
