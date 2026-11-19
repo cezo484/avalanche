@@ -562,7 +562,7 @@ let best = loadBest();
 // sound call is a silent no-op and nothing throws.
 
 const SOUND_MUTED_KEY = 'avalanche-muted';
-const sound = { ctx: null, master: null, musicGain: null, wind: null, music: null, muted: false };
+const sound = { ctx: null, master: null, musicGain: null, wind: null, music: null, muted: false, beeped: false };
 
 function loadMuted() {
   try {
@@ -590,18 +590,36 @@ function ensureAudio() {
   try {
     const Ctor = window.AudioContext || window.webkitAudioContext;
     if (!Ctor) return;
-    sound.ctx = new Ctor();
+    sound.ctx = new Ctor({ latencyHint: 'interactive' });
     sound.master = sound.ctx.createGain();
-    sound.master.gain.value = sound.muted ? 0 : 0.5;
-    sound.master.connect(sound.ctx.destination);
+    sound.master.gain.value = sound.muted ? 0 : 0.9;
+    // A compressor keeps the louder mix from clipping on phone speakers.
+    const comp = sound.ctx.createDynamicsCompressor();
+    comp.threshold.value = -12;
+    comp.knee.value = 20;
+    comp.ratio.value = 8;
+    comp.attack.value = 0.003;
+    comp.release.value = 0.25;
+    sound.master.connect(comp);
+    comp.connect(sound.ctx.destination);
     // Music gets its own bus so it sits under the sound effects.
     sound.musicGain = sound.ctx.createGain();
-    sound.musicGain.gain.value = 0.85;
+    sound.musicGain.gain.value = 1.0;
     sound.musicGain.connect(sound.master);
+    // One short beep proves sound is on: the first touch should be heard.
+    if (!sound.beeped) {
+      sound.beeped = true;
+      if (sound.ctx.state === 'running') playBeep();
+      else sound.ctx.resume().then(playBeep).catch(() => {});
+    }
   } catch {
     sound.ctx = null;
     sound.master = null;
   }
+}
+
+function playBeep() {
+  tone({ freq: 880, dur: 0.15, vol: 0.3 });
 }
 
 function suspendAudio() {
@@ -654,32 +672,32 @@ function noiseBurst({ dur = 0.2, vol = 0.3, filterFreq = 800, type = 'lowpass', 
 function playGulp(kind, combo) {
   const base = kind === 'pine' ? 320 : kind === 'rock' ? 520 : 420;
   const freq = base + (combo - 1) * 70;
-  tone({ freq, endFreq: freq * 1.6, dur: 0.09, vol: 0.25 });
+  tone({ freq, endFreq: freq * 1.6, dur: 0.09, vol: 0.4 });
 }
 
 function playThud() {
-  tone({ freq: 110, endFreq: 38, dur: 0.28, vol: 0.5 });
-  noiseBurst({ dur: 0.18, vol: 0.25, filterFreq: 300 });
+  tone({ freq: 110, endFreq: 38, dur: 0.28, vol: 0.7 });
+  noiseBurst({ dur: 0.18, vol: 0.4, filterFreq: 300 });
 }
 
 function playCrack() {
-  noiseBurst({ dur: 0.15, vol: 0.35, filterFreq: 2400, type: 'highpass' });
-  tone({ freq: 1400, endFreq: 900, type: 'triangle', dur: 0.08, vol: 0.15 });
-  tone({ freq: 1900, endFreq: 1200, type: 'triangle', dur: 0.07, vol: 0.1, when: 0.05 });
+  noiseBurst({ dur: 0.15, vol: 0.5, filterFreq: 2400, type: 'highpass' });
+  tone({ freq: 1400, endFreq: 900, type: 'triangle', dur: 0.08, vol: 0.22 });
+  tone({ freq: 1900, endFreq: 1200, type: 'triangle', dur: 0.07, vol: 0.15, when: 0.05 });
 }
 
 function playCombo(level) {
   const notes = [523.25, 659.25, 783.99, 1046.5];
   const count = Math.min(level, notes.length);
   for (let i = 0; i < count; i++) {
-    tone({ freq: notes[i], type: 'triangle', dur: 0.12, vol: 0.2, when: i * 0.06 });
+    tone({ freq: notes[i], type: 'triangle', dur: 0.12, vol: 0.3, when: i * 0.06 });
   }
 }
 
 function playGameOver() {
   const notes = [659.25, 587.33, 523.25, 392.0];
   notes.forEach((freq, i) => {
-    tone({ freq, type: 'triangle', dur: 0.22, vol: 0.22, when: i * 0.18 });
+    tone({ freq, type: 'triangle', dur: 0.22, vol: 0.32, when: i * 0.18 });
   });
 }
 
@@ -695,7 +713,7 @@ function playWhoosh() {
   filter.Q.value = 1.2;
   const gain = sound.ctx.createGain();
   gain.gain.setValueAtTime(0.001, t0);
-  gain.gain.exponentialRampToValueAtTime(0.25, t0 + 0.15);
+  gain.gain.exponentialRampToValueAtTime(0.4, t0 + 0.15);
   gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.5);
   src.connect(filter);
   filter.connect(gain);
@@ -713,7 +731,7 @@ function startWind() {
   filter.type = 'lowpass';
   filter.frequency.value = 320;
   const gain = sound.ctx.createGain();
-  gain.gain.value = 0.035;
+  gain.gain.value = 0.08;
   const lfo = sound.ctx.createOscillator();
   lfo.frequency.value = 0.08;
   const lfoGain = sound.ctx.createGain();
@@ -790,7 +808,7 @@ function musicHat(when) {
   filter.type = 'highpass';
   filter.frequency.value = 6000;
   const gain = sound.ctx.createGain();
-  gain.gain.setValueAtTime(0.012, when);
+  gain.gain.setValueAtTime(0.03, when);
   gain.gain.exponentialRampToValueAtTime(0.001, when + 0.04);
   src.connect(filter);
   filter.connect(gain);
@@ -807,8 +825,8 @@ function startPad(chord, when, dur) {
     osc.frequency.value = freq;
     const gain = sound.ctx.createGain();
     gain.gain.setValueAtTime(0.001, when);
-    gain.gain.linearRampToValueAtTime(0.016, when + 0.5);
-    gain.gain.setValueAtTime(0.016, when + Math.max(0.5, dur - 0.5));
+    gain.gain.linearRampToValueAtTime(0.05, when + 0.15);
+    gain.gain.setValueAtTime(0.05, when + Math.max(0.15, dur - 0.5));
     gain.gain.linearRampToValueAtTime(0.001, when + dur);
     osc.connect(gain);
     gain.connect(sound.musicGain);
@@ -831,10 +849,10 @@ function scheduleMusicStep(step, when) {
   }
   // Arpeggio on every eighth note.
   const arpFreq = chord.arp[MUSIC_ARP_PATTERN[stepInChord % 8]];
-  musicNote({ freq: arpFreq, dur: stepDur * 0.9, vol: 0.045, when });
+  musicNote({ freq: arpFreq, dur: stepDur * 0.9, vol: 0.12, when });
   // Octave sparkle on beats 1 and 3 once the avalanche is big.
   if (intensity > 0.55 && (stepInChord % 8 === 0 || stepInChord % 8 === 4)) {
-    musicNote({ freq: arpFreq * 2, dur: stepDur * 0.7, vol: 0.02, when });
+    musicNote({ freq: arpFreq * 2, dur: stepDur * 0.7, vol: 0.05, when });
   }
   // Bass pulse on every beat.
   if (stepInChord % 2 === 0) {
@@ -842,7 +860,7 @@ function scheduleMusicStep(step, when) {
       freq: chord.bass,
       type: 'sine',
       dur: 0.22,
-      vol: 0.06 + intensity * 0.03,
+      vol: 0.15 + intensity * 0.03,
       when,
     });
   }
@@ -855,9 +873,9 @@ function scheduleMusicStep(step, when) {
 function musicTick() {
   const music = sound.music;
   if (!music || !sound.ctx || sound.ctx.state !== 'running') return;
-  // Schedule ~0.18 s ahead; when muted the clock still advances so the
+  // Schedule ~0.1 s ahead; when muted the clock still advances so the
   // loop stays in time, it just stays silent.
-  while (music.nextTime < sound.ctx.currentTime + 0.18) {
+  while (music.nextTime < sound.ctx.currentTime + 0.1) {
     if (!sound.muted) scheduleMusicStep(music.step, music.nextTime);
     music.nextTime += musicStepDur();
     music.step += 1;
@@ -867,8 +885,8 @@ function musicTick() {
 function startMusic() {
   if (!sound.ctx || sound.music) return;
   sound.music = {
-    timer: setInterval(musicTick, 100),
-    nextTime: sound.ctx.currentTime + 0.1,
+    timer: setInterval(musicTick, 25),
+    nextTime: sound.ctx.currentTime + 0.05,
     step: 0,
     pads: [],
   };
@@ -898,7 +916,7 @@ function stopMusic() {
 function setMuted(muted) {
   sound.muted = muted;
   saveMuted(muted);
-  if (sound.master) sound.master.gain.value = muted ? 0 : 0.5;
+  if (sound.master) sound.master.gain.value = muted ? 0 : 0.9;
   muteBtn.textContent = muted ? '🔇' : '🔊';
   muteBtn.classList.toggle('off', muted);
   muteBtn.setAttribute('aria-label', muted ? 'Unmute sound' : 'Mute sound');
@@ -1278,8 +1296,9 @@ function frame(now) {
 
   if (state.status === 'playing') {
     // Catches a tap mid-run (?autoplay): the AudioContext only exists
-    // after a gesture, so music starts as soon as it can.
+    // after a gesture, so music and wind start as soon as they can.
     startMusic();
+    startWind();
     stripeOffset += state.speed * dt;
     const input = AUTOPLAY
       ? { moveX: WORLD_WIDTH / 2 + Math.sin(state.time * 0.7) * 150 }
@@ -1331,6 +1350,12 @@ function canvasX(clientX) {
   const rect = canvas.getBoundingClientRect();
   return ((clientX - rect.left) / rect.width) * WORLD_WIDTH;
 }
+
+// Any touch anywhere on the page unlocks audio (mobile autoplay policy):
+// the AudioContext must start from a user gesture, wherever it lands,
+// including a tap on empty space, the menu overlay, or the canvas.
+document.addEventListener('pointerdown', ensureAudio, { capture: true });
+document.addEventListener('touchstart', ensureAudio, { capture: true, passive: true });
 
 canvas.addEventListener('pointerdown', (event) => {
   ensureAudio();
