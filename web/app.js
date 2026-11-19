@@ -79,7 +79,7 @@ let best = loadBest();
 // sound call is a silent no-op and nothing throws.
 
 const SOUND_MUTED_KEY = 'avalanche-muted';
-const sound = { ctx: null, master: null, wind: null, muted: false };
+const sound = { ctx: null, master: null, musicGain: null, wind: null, music: null, muted: false };
 
 function loadMuted() {
   try {
@@ -111,6 +111,10 @@ function ensureAudio() {
     sound.master = sound.ctx.createGain();
     sound.master.gain.value = sound.muted ? 0 : 0.5;
     sound.master.connect(sound.ctx.destination);
+    // Music gets its own bus so it sits under the sound effects.
+    sound.musicGain = sound.ctx.createGain();
+    sound.musicGain.gain.value = 0.85;
+    sound.musicGain.connect(sound.master);
   } catch {
     sound.ctx = null;
     sound.master = null;
@@ -252,6 +256,162 @@ function stopWind() {
   sound.wind = null;
 }
 
+// Background music: a procedural loop synthesized with the Web Audio API,
+// no audio files. A minor, Am-F-C-G, two bars per chord: soft pad chords,
+// a flowing eighth-note arpeggio and a bass pulse on every beat. Tempo and
+// layer density rise gently with the avalanche mass, so the music drives
+// harder as the ball grows. Everything runs through the music bus, under
+// the sound effects, and the master mute silences it along with them.
+
+const MUSIC_CHORDS = [
+  { pad: [110.0, 130.81, 164.81, 220.0], arp: [220.0, 261.63, 329.63, 440.0], bass: 55.0 },
+  { pad: [87.31, 110.0, 130.81, 174.61], arp: [174.61, 220.0, 261.63, 349.23], bass: 43.65 },
+  { pad: [130.81, 164.81, 196.0, 261.63], arp: [261.63, 329.63, 392.0, 523.25], bass: 65.41 },
+  { pad: [98.0, 123.47, 146.83, 196.0], arp: [196.0, 246.94, 293.66, 392.0], bass: 49.0 },
+];
+const MUSIC_ARP_PATTERN = [0, 1, 2, 3, 2, 3, 1, 2];
+const MUSIC_BASE_BPM = 100;
+const MUSIC_MAX_BPM = 118;
+const MUSIC_STEPS_PER_CHORD = 16; // 2 bars of eighth notes
+
+function musicIntensity() {
+  return Math.max(0, Math.min(1, (state.mass - MIN_MASS) / (MAX_MASS - MIN_MASS)));
+}
+
+function musicBpm() {
+  return MUSIC_BASE_BPM + musicIntensity() * (MUSIC_MAX_BPM - MUSIC_BASE_BPM);
+}
+
+function musicStepDur() {
+  return 60 / musicBpm() / 2;
+}
+
+function musicNote({ freq, type = 'triangle', dur, vol, when }) {
+  const osc = sound.ctx.createOscillator();
+  const gain = sound.ctx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(0.001, when);
+  gain.gain.exponentialRampToValueAtTime(vol, when + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.001, when + dur);
+  osc.connect(gain);
+  gain.connect(sound.musicGain);
+  osc.start(when);
+  osc.stop(when + dur + 0.02);
+}
+
+function musicHat(when) {
+  const src = sound.ctx.createBufferSource();
+  src.buffer = noiseBuffer(sound.ctx, 0.05);
+  const filter = sound.ctx.createBiquadFilter();
+  filter.type = 'highpass';
+  filter.frequency.value = 6000;
+  const gain = sound.ctx.createGain();
+  gain.gain.setValueAtTime(0.012, when);
+  gain.gain.exponentialRampToValueAtTime(0.001, when + 0.04);
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(sound.musicGain);
+  src.start(when);
+  src.stop(when + 0.06);
+}
+
+function startPad(chord, when, dur) {
+  const nodes = [];
+  for (const freq of chord.pad) {
+    const osc = sound.ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.value = freq;
+    const gain = sound.ctx.createGain();
+    gain.gain.setValueAtTime(0.001, when);
+    gain.gain.linearRampToValueAtTime(0.016, when + 0.5);
+    gain.gain.setValueAtTime(0.016, when + Math.max(0.5, dur - 0.5));
+    gain.gain.linearRampToValueAtTime(0.001, when + dur);
+    osc.connect(gain);
+    gain.connect(sound.musicGain);
+    osc.start(when);
+    osc.stop(when + dur + 0.05);
+    nodes.push({ osc, gain });
+  }
+  // The previous chord's pad ends on its own schedule; only the newest
+  // chord is tracked, so stopMusic can fade it out.
+  if (sound.music) sound.music.pads = nodes;
+}
+
+function scheduleMusicStep(step, when) {
+  const chord = MUSIC_CHORDS[Math.floor(step / MUSIC_STEPS_PER_CHORD) % MUSIC_CHORDS.length];
+  const stepInChord = step % MUSIC_STEPS_PER_CHORD;
+  const stepDur = musicStepDur();
+  const intensity = musicIntensity();
+  if (stepInChord === 0) {
+    startPad(chord, when, stepDur * MUSIC_STEPS_PER_CHORD);
+  }
+  // Arpeggio on every eighth note.
+  const arpFreq = chord.arp[MUSIC_ARP_PATTERN[stepInChord % 8]];
+  musicNote({ freq: arpFreq, dur: stepDur * 0.9, vol: 0.045, when });
+  // Octave sparkle on beats 1 and 3 once the avalanche is big.
+  if (intensity > 0.55 && (stepInChord % 8 === 0 || stepInChord % 8 === 4)) {
+    musicNote({ freq: arpFreq * 2, dur: stepDur * 0.7, vol: 0.02, when });
+  }
+  // Bass pulse on every beat.
+  if (stepInChord % 2 === 0) {
+    musicNote({
+      freq: chord.bass,
+      type: 'sine',
+      dur: 0.22,
+      vol: 0.06 + intensity * 0.03,
+      when,
+    });
+  }
+  // Soft off-beat tick at higher intensity.
+  if (intensity > 0.4 && stepInChord % 2 === 1) {
+    musicHat(when);
+  }
+}
+
+function musicTick() {
+  const music = sound.music;
+  if (!music || !sound.ctx || sound.ctx.state !== 'running') return;
+  // Schedule ~0.18 s ahead; when muted the clock still advances so the
+  // loop stays in time, it just stays silent.
+  while (music.nextTime < sound.ctx.currentTime + 0.18) {
+    if (!sound.muted) scheduleMusicStep(music.step, music.nextTime);
+    music.nextTime += musicStepDur();
+    music.step += 1;
+  }
+}
+
+function startMusic() {
+  if (!sound.ctx || sound.music) return;
+  sound.music = {
+    timer: setInterval(musicTick, 100),
+    nextTime: sound.ctx.currentTime + 0.1,
+    step: 0,
+    pads: [],
+  };
+  musicTick();
+}
+
+function stopMusic() {
+  const music = sound.music;
+  if (!music) return;
+  clearInterval(music.timer);
+  if (sound.ctx) {
+    const t = sound.ctx.currentTime;
+    for (const node of music.pads) {
+      try {
+        node.gain.gain.cancelScheduledValues(t);
+        node.gain.gain.setValueAtTime(Math.max(0.001, node.gain.gain.value), t);
+        node.gain.gain.linearRampToValueAtTime(0.001, t + 0.15);
+        node.osc.stop(t + 0.2);
+      } catch {
+        // Already stopped.
+      }
+    }
+  }
+  sound.music = null;
+}
+
 function setMuted(muted) {
   sound.muted = muted;
   saveMuted(muted);
@@ -296,6 +456,7 @@ function startRun() {
   lastAbsorbed = 0;
   playWhoosh();
   startWind();
+  startMusic();
   showOverlay('playing');
   refreshHud();
 }
@@ -313,6 +474,7 @@ function endRun() {
     newBest.hidden = true;
   }
   stopWind();
+  stopMusic();
   playGameOver();
   showOverlay('over');
 }
@@ -632,6 +794,9 @@ function frame(now) {
   if (AUTOPLAY && state.status === 'menu') startRun();
 
   if (state.status === 'playing') {
+    // Catches a tap mid-run (?autoplay): the AudioContext only exists
+    // after a gesture, so music starts as soon as it can.
+    startMusic();
     stripeOffset += state.speed * dt;
     const input = AUTOPLAY
       ? { moveX: WORLD_WIDTH / 2 + Math.sin(state.time * 0.7) * 150 }
@@ -738,12 +903,14 @@ document.getElementById('resume-btn').addEventListener('click', () => {
 });
 document.getElementById('quit-btn').addEventListener('click', () => {
   stopWind();
+  stopMusic();
   resetGame(state);
   refreshMenu();
   showOverlay('menu');
 });
 document.getElementById('menu-btn').addEventListener('click', () => {
   stopWind();
+  stopMusic();
   resetGame(state);
   refreshMenu();
   showOverlay('menu');
